@@ -39,6 +39,71 @@ from pkg_resources import resource_filename
 from ._adaptive import *
 
 
+
+
+
+
+
+#####################################################
+import os
+import json
+import numpy as np
+from scipy.sparse import issparse, save_npz
+
+
+def save_plot_checkpoint(path, mags, Y, coordinates, coefs, dic):
+    """
+    Save everything needed to reproduce the balance boxplots to disk.
+
+    Parameters
+    ----------
+    path        : str  – directory to write files into (created if absent)
+    mags        : scipy sparse matrix (n_nodes x n_samples)
+    Y           : pd.Series or array-like of integer class labels
+    coordinates : list[int]  – selected node indices from matching pursuit
+    coefs       : list[float] – matching pursuit coefficients
+    dic         : dict  – {class_name: int_label}  e.g. {'positive':1,'negative':2}
+    """
+    os.makedirs(path, exist_ok=True)
+
+    # 1. mags  (keep sparse to avoid blowing up disk for large trees)
+    mags_path = os.path.join(path, "checkpoint_mags.npz")
+    if issparse(mags):
+        save_npz(mags_path, mags.tocsr())
+    else:
+        # fall back: dense -> compressed npz
+        np.savez_compressed(mags_path.replace(".npz", "_dense.npz"),
+                            mags=np.asarray(mags))
+
+    # 2. Y labels
+    np.save(os.path.join(path, "checkpoint_Y.npy"), np.asarray(Y))
+
+    # 3. coordinates + coefs  (small arrays – plain npy is fine)
+    np.save(os.path.join(path, "checkpoint_coordinates.npy"),
+            np.asarray(coordinates, dtype=np.int64))
+    np.save(os.path.join(path, "checkpoint_coefs.npy"),
+            np.asarray(coefs, dtype=np.float64))
+
+    # 4. dic  (string keys -> json)
+    with open(os.path.join(path, "checkpoint_dic.json"), "w") as f:
+        json.dump(dic, f, indent=2)
+
+    print(f"[checkpoint] saved to {path}")
+    print(f"  mags      : {mags.shape}")
+    print(f"  Y         : {len(Y)} samples")
+    print(f"  coordinates: {coordinates}")
+    print(f"  coefs     : {[round(float(c), 6) for c in coefs]}")
+    print(f"  dic       : {dic}")
+#####################################################
+
+
+
+
+
+
+
+
+
 def get_tree_from_file(tree_file):
     """ Used only for testing and development. """
 
@@ -795,6 +860,21 @@ def adaptive_visual(
             label, output_dir, annotated_tree, coordinates, species)
     else:
         species = {'coord 1': 'No taxonomy provided'}
+
+
+
+
+
+
+    #####################################################
+    # ── checkpoint for fast plot iteration ──
+    save_plot_checkpoint(output_dir, mags, Y, coordinates, coefs, dic)
+    #####################################################
+
+
+
+
+
 
     make_plots(adhld_results, modmags, output_dir, s, k, n)
 

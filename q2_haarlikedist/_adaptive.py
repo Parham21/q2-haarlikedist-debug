@@ -1133,7 +1133,198 @@ def compute_ilr_for_nodes(tree, table_df, node_indices, pseudocount=1e-6, scale=
     return np.vstack(out)  # (len(node_indices), n_samples)
 
 
+
 def boxplot_plotter(mags, y, indices, dic, xlabels, save, path, coefs=None, scale='sqrt'):
+    """
+    Produces a two-column figure for each selected node:
+      Left column  — prevalence bar chart (fraction of samples with node present)
+      Right column — conditional boxplot of wavelet values for present samples only
+ 
+    Shared column headers are printed once at the top.
+    'Node XXXXX' appears as the y-axis label of each left panel.
+ 
+    scale: 'none' | 'sqrt' | 'coef'  (kept for API compatibility; no longer
+           applied to the conditional boxplot — raw wavelet values are shown)
+    """
+    import matplotlib.gridspec as gridspec
+    from scipy.stats import mannwhitneyu
+    from scipy.sparse import issparse
+ 
+    n_panels = len(indices)
+ 
+    # ── class ordering and colours (matches original pipeline) ───────────
+    # dic: {class_name: int_code}
+    # y:   array of int codes
+    y = np.asarray(y)
+    class_names = sorted(dic.keys(), key=lambda k: dic[k])
+    class_codes = np.array([dic[k] for k in class_names], dtype=float)
+    denom       = 2 * class_codes.max() if len(class_codes) == 2 else class_codes.max()
+    colors      = cm.tab10(class_codes / denom)
+ 
+    # ── figure geometry ───────────────────────────────────────────────────
+    panel_h  = 2.8
+    header_h = 0.45
+    fig_w    = 13
+    fig_h    = header_h + n_panels * panel_h
+ 
+    fig = plt.figure(figsize=(fig_w, fig_h))
+ 
+    outer = gridspec.GridSpec(
+        n_panels + 1, 1,
+        figure        = fig,
+        height_ratios = [header_h] + [panel_h] * n_panels,
+        hspace        = 0.35,
+        top           = 0.97,
+        bottom        = 0.06,
+        left          = 0.07,
+        right         = 0.97,
+    )
+ 
+    # ── shared column headers ─────────────────────────────────────────────
+    header_grid = gridspec.GridSpecFromSubplotSpec(
+        1, 2,
+        subplot_spec = outer[0],
+        width_ratios = [1, 2.2],
+        wspace       = 0.35,
+    )
+    ax_hl = fig.add_subplot(header_grid[0])
+    ax_hr = fig.add_subplot(header_grid[1])
+    for ax in (ax_hl, ax_hr):
+        ax.set_axis_off()
+ 
+    ax_hl.text(
+        0.5, 0.5,
+        "Prevalence\n(fraction of samples with node present)",
+        transform=ax_hl.transAxes,
+        ha="center", va="center",
+        fontsize=10, fontweight="bold",
+    )
+    ax_hr.text(
+        0.5, 0.5,
+        "Wavelet value  (present samples only)\n"
+        ">0: left-child clade dominates     "
+        "<0: right-child clade dominates",
+        transform=ax_hr.transAxes,
+        ha="center", va="center",
+        fontsize=10, fontweight="bold",
+    )
+ 
+    # ── helper: presence mask from sparse or dense row ───────────────────
+    def _presence_mask(mags, node_idx):
+        row = mags[node_idx, :]
+        if issparse(row):
+            row_csr = row.tocsr()
+            present = np.zeros(mags.shape[1], dtype=bool)
+            present[row_csr.indices] = True
+        else:
+            arr     = np.asarray(row).ravel()
+            present = arr != 0.0
+        return present
+ 
+    # ── helper: extract dense row ─────────────────────────────────────────
+    def _get_vals(mags, node_idx):
+        row = mags[node_idx, :]
+        if hasattr(row, 'A1'):
+            return row.A1.astype(np.float64)
+        elif hasattr(row, 'todense'):
+            return np.asarray(row.todense()).ravel().astype(np.float64)
+        else:
+            return np.asarray(row).ravel().astype(np.float64)
+ 
+    # ── data rows ─────────────────────────────────────────────────────────
+    for k in range(n_panels):
+        node_idx     = indices[k]
+        wavelet_vals = _get_vals(mags, node_idx)
+        present      = _presence_mask(mags, node_idx)
+ 
+        prevalences         = []
+        cond_vals           = []
+        n_per_class         = []
+        n_present_per_class = []
+ 
+        for name in class_names:
+            code             = dic[name]
+            class_mask       = y == code
+            present_in_class = class_mask & present
+            n_class          = int(class_mask.sum())
+            n_present        = int(present_in_class.sum())
+ 
+            prevalences.append(n_present / n_class if n_class > 0 else 0.0)
+            cond_vals.append(wavelet_vals[present_in_class])
+            n_per_class.append(n_class)
+            n_present_per_class.append(n_present)
+ 
+        inner = gridspec.GridSpecFromSubplotSpec(
+            1, 2,
+            subplot_spec = outer[k + 1],
+            width_ratios = [1, 2.2],
+            wspace       = 0.35,
+        )
+ 
+        # ── left: prevalence bar ─────────────────────────────────────────
+        ax_prev = fig.add_subplot(inner[0])
+        bars = ax_prev.bar(class_names, prevalences,
+                           color=colors, alpha=0.85, width=0.5)
+        ax_prev.set_ylim(0, 1.18)
+        ax_prev.tick_params(labelsize=8)
+        ax_prev.axhline(0.5, color="grey", lw=0.7, ls=":", zorder=0)
+        ax_prev.set_ylabel(f"Node {node_idx}", fontsize=9,
+                           fontweight="bold", labelpad=6)
+ 
+        for bar, pv, n_c, n_p in zip(bars, prevalences,
+                                      n_per_class, n_present_per_class):
+            ax_prev.text(
+                bar.get_x() + bar.get_width() / 2,
+                pv + 0.05,
+                f"{pv:.0%}\n({n_p}/{n_c})",
+                ha="center", va="bottom", fontsize=7,
+            )
+ 
+        # ── right: conditional boxplot ───────────────────────────────────
+        ax_box = fig.add_subplot(inner[1])
+ 
+        if any(len(v) > 0 for v in cond_vals):
+            bp = ax_box.boxplot(
+                cond_vals,
+                vert=True,
+                patch_artist=True,
+                labels=class_names,
+                medianprops  = dict(color="black", linewidth=1.5),
+                whiskerprops = dict(color="black"),
+                capprops     = dict(color="black"),
+                flierprops   = dict(marker=".", markersize=3,
+                                   color="black", alpha=0.4),
+            )
+            for patch, color in zip(bp["boxes"], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.75)
+ 
+        ax_box.axhline(0, color="grey", lw=0.8, ls="--", zorder=0)
+        ax_box.tick_params(labelsize=8)
+ 
+        # Mann-Whitney annotation
+        if len(class_names) == 2 and len(cond_vals[0]) > 1 and len(cond_vals[1]) > 1:
+            _, p     = mannwhitneyu(cond_vals[0], cond_vals[1],
+                                    alternative="two-sided")
+            med_diff = np.median(cond_vals[0]) - np.median(cond_vals[1])
+            p_str    = f"p = {p:.3g}" if p >= 0.001 else "p < 0.001"
+            ax_box.text(
+                0.98, 0.97,
+                f"Δmedian = {med_diff:.4f}  |  {p_str}",
+                transform=ax_box.transAxes,
+                ha="right", va="top", fontsize=7.5,
+                bbox=dict(boxstyle="round,pad=0.2",
+                          fc="white", ec="none", alpha=0.8),
+            )
+ 
+    if save:
+        plt.savefig(path, dpi=400, bbox_inches='tight')
+    plt.close(fig)
+
+
+
+
+def _boxplot_plotter(mags, y, indices, dic, xlabels, save, path, coefs=None, scale='sqrt'):
     """
     scale: 'none' | 'sqrt' | 'coef'
       - 'sqrt' -> multiply node k by sqrt(coefs[k])  (matches biplot)

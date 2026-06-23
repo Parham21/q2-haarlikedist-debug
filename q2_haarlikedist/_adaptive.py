@@ -764,6 +764,17 @@ def adaptive(haar_basis, biom_table, label, tree, meta, s, cluster_affinity, num
                                      min_samples_leaf=1)
         clf.fit(X, Y)
     print('RF training done.')
+    
+
+    from sklearn.metrics import classification_report
+
+    # 1. Quick accuracy score
+    train_accuracy = clf.score(X, Y)
+    print(f"Training Accuracy: {train_accuracy:.4f}")
+
+    # 2. Detailed training stats
+    print("Training Classification Report:\n", classification_report(Y, clf.predict(X)))
+
 
     leaves = clf.apply(X)
     rf_distance = proximity_from_leaves_parallel(
